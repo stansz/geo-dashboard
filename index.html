@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Geo Dashboard</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="style.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🗺️</text></svg>">
+</head>
+<body>
+  <!-- Top bar -->
+  <div class="topbar">
+    <button class="btn-icon" id="btn-sidebar" title="Toggle sidebar">☰</button>
+    <span class="logo">🗺️ Geo</span>
+    <form class="search-box" id="search-form" autocomplete="off">
+      <input type="text" id="search-input" placeholder="coffee near Surrey, trails near Whistler, skytrain Gateway..." autofocus>
+      <button type="submit">Search</button>
+    </form>
+    <button class="btn-icon" id="btn-gps" title="My location">📍</button>
+  </div>
+
+  <!-- Main -->
+  <div class="main">
+    <!-- Sidebar -->
+    <div class="sidebar" id="sidebar">
+      <div class="sidebar-tabs">
+        <button data-tab="places" class="active">Places</button>
+        <button data-tab="custom">Custom</button>
+        <button data-tab="near">Near Me</button>
+      </div>
+      <div class="sidebar-content" id="sidebar-content">
+        <div class="empty-state">
+          <div class="icon">🗺️</div>
+          <div>Search for places, trails, or transit</div>
+          <div style="margin-top:8px;font-size:12px;color:var(--text-dim)">
+            Try: <em>coffee near Vancouver</em><br>
+            <em>trails near Whistler</em><br>
+            <em>skytrain Waterfront</em>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Map -->
+    <div class="map-container">
+      <div id="map"></div>
+
+      <!-- Map overlay controls -->
+      <div class="map-controls">
+        <button class="layer-toggle" id="layer-custom" title="Toggle custom places layer">⭐ Custom</button>
+        <button class="layer-toggle" id="layer-transit" title="Toggle transit layer">🚇 Transit</button>
+      </div>
+
+      <!-- Floating GPS share button -->
+      <button class="gps-float" id="gps-share-btn" title="Share my GPS location">📍 Share GPS</button>
+
+      <!-- Status bar -->
+      <div class="status-bar" id="status-bar">
+        <span>Ready</span>
+        <span></span>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    // Configure API URL — override this before app.js loads if needed
+    // window.GEO_API_URL = 'https://your-vps.example.com:8090';
+  </script>
+  <script src="app.js"></script>
+</body>
+</html>

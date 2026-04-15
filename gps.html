@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Share GPS</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      text-align: center;
+    }
+    .icon { font-size: 64px; margin-bottom: 16px; }
+    h1 { font-size: 24px; margin-bottom: 8px; }
+    .status {
+      font-size: 16px;
+      color: #9e9e9e;
+      margin-bottom: 24px;
+      min-height: 24px;
+    }
+    .status.success { color: #66bb6a; }
+    .status.error { color: #ef5350; }
+    .coords {
+      background: #1f2b47;
+      border: 1px solid #2a3a5c;
+      border-radius: 8px;
+      padding: 16px;
+      font-family: monospace;
+      font-size: 14px;
+      margin-bottom: 24px;
+      display: none;
+      word-break: break-all;
+    }
+    .coords.show { display: block; }
+    button {
+      background: #2196f3;
+      color: #fff;
+      border: none;
+      border-radius: 50px;
+      padding: 16px 40px;
+      font-size: 18px;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    button:hover { background: #4fc3f7; }
+    button:active { transform: scale(0.97); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .history {
+      margin-top: 32px;
+      font-size: 12px;
+      color: #9e9e9e;
+    }
+    .history span { display: block; margin-top: 4px; }
+  </style>
+</head>
+<body>
+  <div class="icon">📍</div>
+  <h1>GPS Share</h1>
+  <div class="status" id="status">Tap the button to share your location</div>
+  <div class="coords" id="coords"></div>
+  <button id="btn-share" onclick="shareGPS()">Share My Location</button>
+  <div class="history" id="history"></div>
+
+  <script>
+    // API URL — auto-detect or override
+    var API = window.GEO_API_URL || (location.hostname === 'localhost' ? 'http://localhost:8090' : '');
+
+    function setStatus(msg, cls) {
+      var el = document.getElementById('status');
+      el.textContent = msg;
+      el.className = 'status ' + (cls || '');
+    }
+
+    function showCoords(lat, lon, acc) {
+      var el = document.getElementById('coords');
+      el.textContent = lat.toFixed(6) + ', ' + lon.toFixed(6) + (acc ? ' (±' + Math.round(acc) + 'm)' : '');
+      el.className = 'coords show';
+    }
+
+    function shareGPS() {
+      if (!navigator.geolocation) {
+        setStatus('Geolocation not supported on this device', 'error');
+        return;
+      }
+
+      var btn = document.getElementById('btn-share');
+      btn.disabled = true;
+      btn.textContent = 'Getting location...';
+      setStatus('Acquiring GPS...', '');
+
+      navigator.geolocation.getCurrentPosition(
+        function(pos) {
+          var lat = pos.coords.latitude;
+          var lon = pos.coords.longitude;
+          var acc = pos.coords.accuracy;
+
+          showCoords(lat, lon, acc);
+
+          // Send to API
+          fetch(API + '/api/location', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ lat: lat, lon: lon, accuracy: acc })
+          }).then(function(r) {
+            if (r.ok) {
+              setStatus('✓ Location shared successfully!', 'success');
+            } else {
+              setStatus('Location saved locally (API error)', 'error');
+            }
+          }).catch(function() {
+            setStatus('Location saved locally (offline)', 'error');
+          });
+
+          // Save to localStorage
+          try {
+            localStorage.setItem('lastLocation', JSON.stringify({
+              lat: lat, lon: lon, accuracy: acc, ts: Date.now()
+            }));
+          } catch(e) {}
+
+          // Save history
+          saveHistory(lat, lon, acc);
+
+          btn.disabled = false;
+          btn.textContent = 'Refresh Location';
+        },
+        function(err) {
+          setStatus('GPS error: ' + err.message, 'error');
+          btn.disabled = false;
+          btn.textContent = 'Try Again';
+        },
+        { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+      );
+    }
+
+    function saveHistory(lat, lon, acc) {
+      try {
+        var hist = JSON.parse(localStorage.getItem('gpsHistory') || '[]');
+        hist.unshift({ lat: lat, lon: lon, acc: Math.round(acc), ts: Date.now() });
+        if (hist.length > 5) hist = hist.slice(0, 5);
+        localStorage.setItem('gpsHistory', JSON.stringify(hist));
+        renderHistory(hist);
+      } catch(e) {}
+    }
+
+    function renderHistory(hist) {
+      if (!hist || hist.length === 0) return;
+      var el = document.getElementById('history');
+      var html = 'Recent shares:';
+      hist.forEach(function(h) {
+        var d = new Date(h.ts);
+        var time = d.toLocaleTimeString();
+        html += '<span>' + time + ' — ' + h.lat.toFixed(5) + ', ' + h.lon.toFixed(5) + ' (±' + h.acc + 'm)</span>';
+      });
+      el.innerHTML = html;
+    }
+
+    // Show history on load
+    try {
+      var hist = JSON.parse(localStorage.getItem('gpsHistory') || '[]');
+      if (hist.length > 0) renderHistory(hist);
+    } catch(e) {}
+
+    // Auto-share on load
+    // Uncomment the next line to auto-share when the page opens:
+    // shareGPS();
+  </script>
+</body>
+</html>
