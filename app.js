@@ -26,10 +26,26 @@ const state = {
   busStopMarkers: [],
   currentTileLayer: 'Voyager',
   elevationMode: false,
-  elevationPoints: [],
-  elevationLine: null,
+  elevationPoints: [],       // Leaflet markers for elevation route points
+  elevationCoords: [],        // [{lat, lng}] for elevation route points
+  elevationLine: null,        // Polyline connecting elevation points
   profileChart: null,
   selectedMarker: null,
+  // Multi-point route mode
+  elevationModeType: 'single', // 'single' (2-pt auto-reset) or 'multi' (keep adding)
+  routeProfileData: [],        // merged profile segments [{lat,lon,elevation_m,distance_m}]
+  // Measurement tool
+  measureMode: false,
+  measurePoints: [],           // [{lat, lng}] for measurement route
+  measureMarkers: [],          // Leaflet markers for measurement points
+  measureLine: null,           // Polyline for measurement route
+  measureTooltips: [],         // Leaflet tooltip layers on segments
+  // Ferries and Weather
+  ferryMarkers: [],
+  weatherVisible: false,
+  ferriesVisible: false,
+  weatherData: null,
+  ferriesData: null,
 };
 
 let tileLayers = {};
@@ -90,10 +106,10 @@ function initMap() {
 
   L.control.zoom({ position: 'bottomleft' }).addTo(state.map);
 
-  // Click on map to add custom place
+  // Click on map to add custom place or route points
   state.map.on('click', (e) => {
-    if (state.elevationMode) {
-      handleElevationClick(e.latlng);
+    if (state.elevationMode || state.measureMode) {
+      handleRouteClick(e.latlng);
     } else if (state.activeTab === 'custom') {
       showAddPlaceModal(e.latlng.lat, e.latlng.lng);
     }
@@ -141,6 +157,20 @@ function initUI() {
   // Layer toggles
   document.getElementById('layer-custom').addEventListener('click', toggleCustomPlaces);
   document.getElementById('layer-transit').addEventListener('click', toggleTransit);
+  document.getElementById('layer-ferries').addEventListener('click', toggleFerries);
+  document.getElementById('btn-legend').addEventListener('click', showLegendModal);
+  document.getElementById('btn-weather').addEventListener('click', () => switchTab('weather'));
+  document.getElementById('btn-theme')?.addEventListener('click', toggleTheme);
+
+  // Search history
+  const searchInput = document.getElementById('search-input');
+  if (searchInput) {
+    searchInput.addEventListener('focus', showSearchHistory);
+    searchInput.addEventListener('blur', () => setTimeout(hideSearchHistory, 200));
+  }
+
+  // Init theme
+  initTheme();
 
   // Tile layer switcher
   document.querySelectorAll('#tile-switcher button').forEach(btn => {
@@ -157,6 +187,22 @@ function initUI() {
 
   // Elevation mode toggle
   document.getElementById('layer-elevation').addEventListener('click', toggleElevationMode);
+  
+  // Measurement tool toggle
+  document.getElementById('layer-measure').addEventListener('click', toggleMeasureMode);
+
+  // Route tools buttons in the elevation/measure panel
+  document.getElementById('btn-add-point')?.addEventListener('click', addElevationPoint);
+  document.getElementById('btn-remove-last')?.addEventListener('click', removeLastPoint);
+  document.getElementById('btn-clear-route')?.addEventListener('click', clearRoute);
+  document.getElementById('btn-export-gpx')?.addEventListener('click', exportGPX);
+  // Mode toggle radio
+  document.querySelectorAll('input[name="route-mode"]').forEach(radio => {
+    radio.addEventListener('change', (e) => {
+      state.elevationModeType = e.target.value;
+      // Update UI maybe
+    });
+  });
 
   // Radius slider
   const slider = document.getElementById('radius-slider');
@@ -252,6 +298,9 @@ async function sendLocationToServer(lat, lon, accuracy) {
 async function handleSearch() {
   const input = document.getElementById('search-input').value.trim();
   if (!input) return;
+
+  saveSearchHistory(input);
+  hideSearchHistory();
 
   const q = parseSearchQuery(input);
   clearResults();
@@ -749,6 +798,10 @@ function switchTab(tab) {
     loadCustomPlaces();
   } else if (tab === 'near') {
     loadNearby();
+  } else if (tab === 'weather') {
+    loadWeather();
+  } else if (tab === 'ferries') {
+    loadFerries();
   }
 }
 
@@ -779,6 +832,34 @@ async function loadNearby() {
     placeMarkers(data);
   } catch (e) {
     showError('Failed: ' + e.message);
+  }
+}
+
+async function loadWeather() {
+  showLoading();
+  let lat = state.lat, lon = state.lon;
+  if (lat === null || lon === null) {
+    const center = state.map.getCenter();
+    lat = center.lat;
+    lon = center.lng;
+  }
+  try {
+    const data = await apiGet('/api/weather', { lat, lon });
+    state.weatherData = data;
+    renderWeather(data);
+  } catch (e) {
+    showError('Weather load failed: ' + e.message);
+  }
+}
+
+async function loadFerries() {
+  showLoading();
+  try {
+    const data = await apiGet('/api/ferries');
+    state.ferriesData = data;
+    renderFerries(data);
+  } catch (e) {
+    showError('Ferries load failed: ' + e.message);
   }
 }
 
@@ -827,6 +908,21 @@ async function toggleTransit() {
     state.transitMarkers = [];
     state.busStopMarkers.forEach(m => state.map.removeLayer(m));
     state.busStopMarkers = [];
+  }
+}
+
+async function toggleFerries() {
+  state.ferriesVisible = !state.ferriesVisible;
+  document.getElementById('layer-ferries').classList.toggle('active', state.ferriesVisible);
+
+  if (state.ferriesVisible) {
+    try {
+      const data = await apiGet('/api/ferries');
+      placeFerryMarkers(data);
+    } catch (e) { /* silent */ }
+  } else {
+    state.ferryMarkers.forEach(m => state.map.removeLayer(m));
+    state.ferryMarkers = [];
   }
 }
 
@@ -886,12 +982,151 @@ async function loadBusStopsInView() {
 // ---------------------------------------------------------------------------
 function toggleElevationMode() {
   state.elevationMode = !state.elevationMode;
+  if (state.elevationMode && state.measureMode) {
+    state.measureMode = false;
+    document.getElementById('layer-measure').classList.remove('active');
+    clearMeasurementState();
+  }
   document.getElementById('layer-elevation').classList.toggle('active', state.elevationMode);
   state.map.getContainer().style.cursor = state.elevationMode ? 'crosshair' : '';
 
   if (!state.elevationMode) {
     clearElevationState();
   }
+}
+
+function toggleMeasureMode() {
+  state.measureMode = !state.measureMode;
+  if (state.measureMode && state.elevationMode) {
+    state.elevationMode = false;
+    document.getElementById('layer-elevation').classList.remove('active');
+    clearElevationState();
+  }
+  document.getElementById('layer-measure').classList.toggle('active', state.measureMode);
+  state.map.getContainer().style.cursor = state.measureMode ? 'crosshair' : '';
+
+  if (!state.measureMode) {
+    clearMeasurementState();
+  }
+}
+
+function clearMeasurementState() {
+  state.measureMarkers.forEach(m => state.map.removeLayer(m));
+  state.measureMarkers = [];
+  state.measurePoints = [];
+  if (state.measureLine) { state.map.removeLayer(state.measureLine); state.measureLine = null; }
+  state.measureTooltips.forEach(t => state.map.removeLayer(t));
+  state.measureTooltips = [];
+  const panel = document.getElementById('elevation-panel');
+  if (panel) panel.style.display = 'none';
+}
+
+// Helper functions for measurement tool
+function computeDistance(p1, p2) {
+  return p1.distanceTo(p2); // meters
+}
+
+function formatDistance(meters) {
+  return formatDist(meters);
+}
+
+function updateMeasurementLine() {
+  if (state.measureLine) {
+    state.map.removeLayer(state.measureLine);
+    state.measureLine = null;
+  }
+  if (state.measurePoints.length >= 2) {
+    state.measureLine = L.polyline(state.measurePoints, {
+      color: '#4fc3f7',
+      weight: 3,
+      dashArray: null
+    }).addTo(state.map);
+  }
+}
+
+function updateMeasurementTooltips() {
+  // Remove existing tooltips
+  state.measureTooltips.forEach(t => state.map.removeLayer(t));
+  state.measureTooltips = [];
+  
+  // Add tooltips for each segment
+  for (let i = 0; i < state.measurePoints.length - 1; i++) {
+    const p1 = state.measurePoints[i];
+    const p2 = state.measurePoints[i + 1];
+    const distance = computeDistance(p1, p2);
+    const cumulative = state.measurePoints.slice(0, i + 1).reduce((total, _, idx, arr) => {
+      if (idx === 0) return 0;
+      return total + computeDistance(arr[idx - 1], arr[idx]);
+    }, 0) + distance;
+    
+    const midpoint = L.latLng(
+      (p1.lat + p2.lat) / 2,
+      (p1.lng + p2.lng) / 2
+    );
+    
+    const tooltip = L.tooltip({
+      permanent: true,
+      direction: 'center',
+      className: 'measure-tooltip',
+      offset: [0, 0]
+    })
+      .setLatLng(midpoint)
+      .setContent(`<div class="measure-segment">${formatDistance(distance)}</div><div class="measure-cumulative">Σ ${formatDistance(cumulative)}</div>`)
+      .addTo(state.map);
+    state.measureTooltips.push(tooltip);
+  }
+}
+
+function clearMeasurement() {
+  clearMeasurementState();
+}
+
+function clearRoute() {
+  if (state.elevationMode) clearElevationState();
+  if (state.measureMode) clearMeasurementState();
+}
+
+function removeLastPoint() {
+  if (state.elevationMode && state.elevationPoints.length > 0) {
+    const marker = state.elevationPoints.pop();
+    state.elevationCoords.pop();
+    if (marker) state.map.removeLayer(marker);
+    // Update line
+    if (state.elevationLine) state.map.removeLayer(state.elevationLine);
+    if (state.elevationCoords.length >= 2) {
+      state.elevationLine = L.polyline(state.elevationCoords, { 
+        color: '#ff6b35', 
+        weight: 3, 
+        dashArray: '8 4'
+      }).addTo(state.map);
+    } else {
+      state.elevationLine = null;
+    }
+    // Update profile panel if needed
+    if (state.elevationCoords.length < 2) {
+      const panel = document.getElementById('elevation-panel');
+      if (panel) panel.style.display = 'none';
+    }
+  }
+  if (state.measureMode && state.measureMarkers.length > 0) {
+    const marker = state.measureMarkers.pop();
+    state.measurePoints.pop();
+    if (marker) state.map.removeLayer(marker);
+    // Update measurement line and tooltips
+    updateMeasurementLine();
+    updateMeasurementTooltips();
+    // Hide panel if no points
+    if (state.measurePoints.length === 0) {
+      const panel = document.getElementById('elevation-panel');
+      if (panel) panel.style.display = 'none';
+    }
+  }
+}
+
+function addElevationPoint() {
+  // This function would typically prompt user for a location
+  // For now, we'll just focus the map and show a message
+  alert('Click on the map to add an elevation point');
 }
 
 function clearElevationState() {
@@ -902,37 +1137,66 @@ function clearElevationState() {
   if (panel) panel.style.display = 'none';
 }
 
-async function handleElevationClick(latlng) {
-  if (!state.elevationMode) return;
+async function handleRouteClick(latlng) {
+  const isElevation = state.elevationMode;
+  const isMeasure = state.measureMode;
+  if (!isElevation && !isMeasure) return;
 
-  // Add marker for this point
-  const icon = makeIcon('📍');
-  const marker = L.marker([latlng.lat, latlng.lng], { icon }).addTo(state.map);
-  state.elevationPoints.push(marker);
+  if (isElevation) {
+    // Elevation mode
+    const icon = makeIcon('📍');
+    const marker = L.marker([latlng.lat, latlng.lng], { icon }).addTo(state.map);
+    state.elevationPoints.push(marker);
+    state.elevationCoords.push(latlng);
 
-  if (state.elevationPoints.length === 1) {
-    // First point — just show elevation
-    try {
-      const data = await apiGet('/api/elevation', { lat: latlng.lat.toFixed(6), lon: latlng.lng.toFixed(6) });
-      marker.bindPopup(`<div class="popup-title">📏 Elevation</div>
-        <div class="popup-meta">${data.elevation_m != null ? data.elevation_m + ' m' : 'No data'}</div>
-        <div class="popup-meta">${latlng.lat.toFixed(4)}, ${latlng.lng.toFixed(4)}</div>`).openPopup();
-    } catch (e) { /* silent */ }
+    // If first point, query elevation at point
+    if (state.elevationPoints.length === 1) {
+      try {
+        const data = await apiGet('/api/elevation', { lat: latlng.lat.toFixed(6), lon: latlng.lng.toFixed(6) });
+        marker.bindPopup(`<div class="popup-title">📏 Elevation</div>
+          <div class="popup-meta">${data.elevation_m != null ? data.elevation_m + ' m' : 'No data'}</div>
+          <div class="popup-meta">${latlng.lat.toFixed(4)}, ${latlng.lng.toFixed(4)}</div>`).openPopup();
+      } catch (e) { /* silent */ }
+    }
+
+    // Update route line
+    if (state.elevationLine) state.map.removeLayer(state.elevationLine);
+    if (state.elevationCoords.length >= 2) {
+      state.elevationLine = L.polyline(state.elevationCoords, { 
+        color: '#ff6b35', 
+        weight: 3, 
+        dashArray: '8 4'
+      }).addTo(state.map);
+    }
+
+    // Determine mode: single segment (auto‑profile) vs multi‑point route
+    const mode = state.elevationModeType; // 'single' or 'multi'
+    if (state.elevationCoords.length === 2 && mode === 'single') {
+      // Two points in single‑segment mode → fetch elevation profile
+      await loadElevationProfile(state.elevationCoords[0], state.elevationCoords[1]);
+      // Auto‑clear after delay (existing behavior)
+      setTimeout(() => { clearElevationState(); }, 15000);
+    } else if (state.elevationCoords.length >= 2 && mode === 'multi') {
+      // Multi‑point route: fetch profile for each new segment and merge
+      await updateMultiPointElevationProfile();
+    }
   }
 
-  if (state.elevationPoints.length === 2) {
-    // Two points — draw profile
-    const p1 = state.elevationPoints[0].getLatLng();
-    const p2 = state.elevationPoints[1].getLatLng();
-    state.elevationLine = L.polyline([p1, p2], { color: '#ff6b35', weight: 3, dashArray: '8 4' }).addTo(state.map);
-    await loadElevationProfile(p1, p2);
-    // Reset for next query after a delay
-    setTimeout(() => { clearElevationState(); }, 15000);
+  if (isMeasure) {
+    // Measurement mode
+    const icon = makeIcon('📍');
+    const marker = L.marker([latlng.lat, latlng.lng], { icon }).addTo(state.map);
+    state.measureMarkers.push(marker);
+    state.measurePoints.push(latlng);
+
+    // Update measurement line and tooltips
+    updateMeasurementLine();
+    updateMeasurementTooltips();
   }
 
-  if (state.elevationPoints.length > 2) {
-    clearElevationState();
-  }
+  // Show the route tools panel if not already visible
+  const panel = document.getElementById('elevation-panel');
+  if (panel) panel.style.display = 'block';
 }
 
 async function loadElevationProfile(p1, p2) {
@@ -1146,6 +1410,139 @@ function formatSAC(s) {
     strolling: 'Stroll',
   };
   return m[s] || s;
+}
+
+// ---------------------------------------------------------------------------
+// Map Legend
+// ---------------------------------------------------------------------------
+function showLegendModal() {
+  const existing = document.getElementById('legend-modal');
+  if (existing) { existing.remove(); return; }
+  const layers = [
+    { icon: '📍', name: 'OSM Places', desc: 'Restaurants, cafés, shops, POIs from OpenStreetMap' },
+    { icon: '⭐', name: 'Custom Places', desc: 'Airports, malls, hospitals, universities, ski resorts, ferry terminals' },
+    { icon: '🚇', name: 'Transit', desc: 'SkyTrain stations and bus stops' },
+    { icon: '🥾', name: 'Trails', desc: 'BC hiking trails with difficulty ratings' },
+    { icon: '📏', name: 'Elevation', desc: 'Point elevation query and multi-point profiles' },
+    { icon: '📐', name: 'Measure', desc: 'Distance measurement between points' },
+    { icon: '⛴️', name: 'Ferries', desc: 'BC Ferries terminals with schedules and capacity' },
+    { icon: '☁️', name: 'Weather', desc: 'Current conditions and hourly forecast (Open-Meteo)' },
+  ];
+  const modal = document.createElement('div');
+  modal.id = 'legend-modal';
+  modal.className = 'modal-overlay';
+  modal.innerHTML = `
+    <div class="modal legend-modal-content">
+      <div class="modal-header">
+        <h3>📖 Map Legend</h3>
+        <button class="btn-icon" onclick="document.getElementById('legend-modal').remove()">✕</button>
+      </div>
+      <div class="legend-grid">
+        ${layers.map(l => `
+          <div class="legend-item">
+            <span class="legend-icon">${l.icon}</span>
+            <div class="legend-info">
+              <strong>${l.name}</strong>
+              <span>${l.desc}</span>
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  `;
+  modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
+  document.body.appendChild(modal);
+}
+
+// ---------------------------------------------------------------------------
+// Dark/Light Theme
+// ---------------------------------------------------------------------------
+function initTheme() {
+  const saved = localStorage.getItem('theme');
+  if (saved) {
+    document.documentElement.setAttribute('data-theme', saved);
+  } else if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
+    document.documentElement.setAttribute('data-theme', 'dark');
+  } else {
+    document.documentElement.setAttribute('data-theme', 'light');
+  }
+  updateThemeIcon();
+}
+
+function toggleTheme() {
+  const current = document.documentElement.getAttribute('data-theme') || 'light';
+  const next = current === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  localStorage.setItem('theme', next);
+  updateThemeIcon();
+}
+
+function updateThemeIcon() {
+  const btn = document.getElementById('btn-theme');
+  if (!btn) return;
+  const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  btn.textContent = isDark ? '☀️' : '🌙';
+}
+
+// ---------------------------------------------------------------------------
+// Search History
+// ---------------------------------------------------------------------------
+function getSearchHistory() {
+  try { return JSON.parse(localStorage.getItem('searchHistory') || '[]'); }
+  catch { return []; }
+}
+
+function saveSearchHistory(query) {
+  if (!query || query.trim().length < 2) return;
+  let history = getSearchHistory();
+  // Remove duplicate
+  history = history.filter(h => h.q.toLowerCase() !== query.toLowerCase());
+  history.unshift({ q: query, ts: Date.now() });
+  // Keep last 10
+  history = history.slice(0, 10);
+  localStorage.setItem('searchHistory', JSON.stringify(history));
+}
+
+function showSearchHistory() {
+  const dropdown = document.getElementById('search-history');
+  if (!dropdown) return;
+  const history = getSearchHistory();
+  if (history.length === 0) { dropdown.style.display = 'none'; return; }
+  dropdown.innerHTML = history.map(h => {
+    const ago = timeAgo(h.ts);
+    return `<div class="history-item" onclick="applySearchHistory('${esc(h.q)}')">
+      <span class="history-query">${esc(h.q)}</span>
+      <span class="history-time">${ago}</span>
+    </div>`;
+  }).join('') + '<div class="history-item history-clear" onclick="clearSearchHistory()">🗑️ Clear history</div>';
+  dropdown.style.display = 'block';
+}
+
+function hideSearchHistory() {
+  const dropdown = document.getElementById('search-history');
+  if (dropdown) dropdown.style.display = 'none';
+}
+
+function applySearchHistory(query) {
+  document.getElementById('search-input').value = query;
+  hideSearchHistory();
+  handleSearch();
+}
+
+function clearSearchHistory() {
+  localStorage.removeItem('searchHistory');
+  hideSearchHistory();
+}
+
+function timeAgo(ts) {
+  const diff = Date.now() - ts;
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return mins + 'm ago';
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return hrs + 'h ago';
+  const days = Math.floor(hrs / 24);
+  return days + 'd ago';
 }
 
 function difficultyBadge(sac) {

@@ -16,6 +16,7 @@
     <span class="logo">🗺️ Geo</span>
     <form class="search-box" id="search-form" autocomplete="off">
       <input type="text" id="search-input" placeholder="coffee near Surrey, trails near Whistler, skytrain Gateway..." autofocus>
+      <div id="search-history" class="search-history-dropdown" style="display:none"></div>
       <button type="submit">Search</button>
     </form>
     <button class="btn-icon" id="btn-clear" title="Clear search" style="display:none">✕</button>
@@ -24,6 +25,8 @@
       <input type="range" id="radius-slider" min="1" max="50" value="5">
       <span id="radius-value">5 km</span>
     </div>
+    <button class="btn-icon" id="btn-weather" title="Weather">☁️</button>
+    <button class="btn-icon" id="btn-theme" title="Toggle theme">🌙</button>
     <button class="btn-icon" id="btn-gps" title="My location">📍</button>
   </div>
 
@@ -35,6 +38,8 @@
         <button data-tab="places" class="active">Places</button>
         <button data-tab="custom">Custom</button>
         <button data-tab="near">Near Me</button>
+        <button data-tab="weather">☁️ Weather</button>
+        <button data-tab="ferries">⛴️ Ferries</button>
       </div>
       <div class="sidebar-content" id="sidebar-content">
         <div class="empty-state">
@@ -58,6 +63,9 @@
         <button class="layer-toggle" id="layer-custom" title="Toggle custom places layer">⭐ Custom</button>
         <button class="layer-toggle" id="layer-transit" title="Toggle transit layer">🚇 Transit</button>
         <button class="layer-toggle" id="layer-elevation" title="Toggle elevation query mode">📏 Elevation</button>
+        <button class="layer-toggle" id="layer-measure" title="Toggle measurement mode">📐 Measure</button>
+        <button class="layer-toggle" id="layer-ferries" title="Toggle ferries layer">⛴️ Ferries</button>
+        <button class="layer-toggle" id="btn-legend" title="Show map legend">📖 Legend</button>
         <div class="tile-switcher" id="tile-switcher">
           <button data-tile="Voyager" class="active">Map</button>
           <button data-tile="Topo">Topo</button>
@@ -71,11 +79,23 @@
       <!-- Search this area button -->
       <button class="search-area-btn" id="search-area-btn" title="Search current map view" style="display:none">🔍 Search this area</button>
 
-      <!-- Elevation profile panel -->
+      <!-- Route Tools panel (Elevation + Measurement) -->
       <div class="elevation-panel" id="elevation-panel" style="display:none">
         <div class="elevation-header">
-          <span class="elevation-title">📏 Elevation Profile</span>
+          <span class="elevation-title">📏 Route Tools</span>
           <button class="elevation-close" id="elevation-close">✕</button>
+        </div>
+        <div class="route-controls">
+          <div class="mode-toggle">
+            <label><input type="radio" name="route-mode" value="single" checked> Single segment</label>
+            <label><input type="radio" name="route-mode" value="multi"> Multi-point route</label>
+          </div>
+          <div class="route-buttons">
+            <button class="btn-small" id="btn-add-point" title="Add point">+ Add point</button>
+            <button class="btn-small" id="btn-remove-last" title="Remove last point">⌫ Remove last</button>
+            <button class="btn-small" id="btn-clear-route" title="Clear route">🗑️ Clear route</button>
+            <button class="btn-small" id="btn-export-gpx" title="Export GPX">💾 Export GPX</button>
+          </div>
         </div>
         <canvas id="elevation-canvas" style="width:100%;height:120px"></canvas>
         <div class="elevation-stats">
@@ -83,6 +103,12 @@
           <span id="el-loss">↓--</span>
           <span id="el-min">Min: --</span>
           <span id="el-max">Max: --</span>
+        </div>
+        <div class="measure-stats" id="measure-stats" style="display:none">
+          <div>Segment distance: <span id="segment-distance">--</span></div>
+          <div>Cumulative distance: <span id="cumulative-distance">--</span></div>
+          <div>Elevation gain: <span id="measure-gain">--</span></div>
+          <div>Elevation loss: <span id="measure-loss">--</span></div>
         </div>
       </div>
 
