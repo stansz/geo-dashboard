@@ -196,6 +196,7 @@ function initUI() {
   document.getElementById('btn-remove-last')?.addEventListener('click', removeLastPoint);
   document.getElementById('btn-clear-route')?.addEventListener('click', clearRoute);
   document.getElementById('btn-export-gpx')?.addEventListener('click', exportGPX);
+  document.getElementById('gpx-import')?.addEventListener('change', handleGPXImport);
   // Mode toggle radio
   document.querySelectorAll('input[name="route-mode"]').forEach(radio => {
     radio.addEventListener('change', (e) => {
@@ -1543,6 +1544,148 @@ function timeAgo(ts) {
   if (hrs < 24) return hrs + 'h ago';
   const days = Math.floor(hrs / 24);
   return days + 'd ago';
+}
+
+// ---------------------------------------------------------------------------
+// GPX Export & Import
+// ---------------------------------------------------------------------------
+function exportGPX() {
+  const points = state.elevationCoords.length > 0 ? state.elevationCoords : state.measurePoints;
+  if (points.length < 2) {
+    alert('Add at least 2 points to export a route.');
+    return;
+  }
+  const now = new Date().toISOString();
+  const trackpoints = points.map((p, i) => {
+    const elev = state.routeProfileData?.[i]?.elevation_m || 0;
+    return `        <trkpt lat="${p.lat.toFixed(7)}" lon="${p.lng.toFixed(7)}">
+          <ele>${elev.toFixed(1)}</ele>
+          <time>${now}</time>
+        </trkpt>`;
+  }).join('\n');
+  const gpx = `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="OGs Maps"
+  xmlns="http://www.topografix.com/GPX/1/1"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd">
+  <metadata>
+    <name>Route ${new Date().toLocaleDateString()}</name>
+    <time>${now}</time>
+  </metadata>
+  <trk>
+    <name>Route</name>
+    <trkseg>
+${trackpoints}
+    </trkseg>
+  </trk>
+</gpx>`;
+  const blob = new Blob([gpx], { type: 'application/gpx+xml' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `route-${Date.now()}.gpx`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function importGPX(file) {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const parser = new DOMParser();
+      const xml = parser.parseFromString(e.target.result, 'text/xml');
+      const trkpts = xml.querySelectorAll('trkpt');
+      const wpts = xml.querySelectorAll('wpt');
+      const points = [];
+
+      // Track points
+      trkpts.forEach(pt => {
+        const lat = parseFloat(pt.getAttribute('lat'));
+        const lon = parseFloat(pt.getAttribute('lon'));
+        if (!isNaN(lat) && !isNaN(lon)) points.push({ lat, lng: lon });
+      });
+
+      // If no track points, try waypoints
+      if (points.length === 0) {
+        wpts.forEach(pt => {
+          const lat = parseFloat(pt.getAttribute('lat'));
+          const lon = parseFloat(pt.getAttribute('lon'));
+          if (!isNaN(lat) && !isNaN(lon)) points.push({ lat, lng: lon });
+        });
+      }
+
+      if (points.length < 2) {
+        alert('GPX file has fewer than 2 points.');
+        return;
+      }
+
+      // Clear existing route and switch to elevation mode
+      clearRoute();
+      state.elevationMode = true;
+      state.elevationModeType = 'multi';
+      document.getElementById('layer-elevation').classList.add('active');
+      document.getElementById('layer-measure').classList.remove('active');
+      state.map.getContainer().style.cursor = 'crosshair';
+
+      // Set multi-point mode radio
+      const multiRadio = document.querySelector('input[name="route-mode"][value="multi"]');
+      if (multiRadio) multiRadio.checked = true;
+
+      // Add points to map
+      points.forEach(p => {
+        const marker = L.circleMarker([p.lat, p.lng], {
+          radius: 6, fillColor: '#ff6b35', color: '#fff', weight: 1, fillOpacity: 0.9
+        }).addTo(state.map);
+        state.elevationPoints.push(marker);
+        state.elevationCoords.push(p);
+      });
+
+      // Draw polyline
+      if (state.elevationLine) state.map.removeLayer(state.elevationLine);
+      state.elevationLine = L.polyline(points, {
+        color: '#ff6b35', weight: 3, dashArray: '8 4'
+      }).addTo(state.map);
+
+      // Fit map to route
+      state.map.fitBounds(L.latLngBounds(points), { padding: [30, 30] });
+
+      // Fetch elevation profile for the route
+      fetchElevationForRoute(points);
+
+    } catch (err) {
+      alert('Failed to parse GPX: ' + err.message);
+    }
+  };
+  reader.readAsText(file);
+}
+
+async function fetchElevationForRoute(points) {
+  // Fetch elevation profile for each segment and merge
+  const allData = [];
+  for (let i = 0; i < points.length - 1; i++) {
+    try {
+      const resp = await fetch(`${API}/api/elevation/profile?lat1=${points[i].lat}&lon1=${points[i].lng}&lat2=${points[i+1].lat}&lon2=${points[i+1].lng}`);
+      const data = await resp.json();
+      if (data.profile) {
+        // Offset distance for segments after the first
+        const offset = allData.length > 0 ? allData[allData.length - 1].distance_m : 0;
+        const segment = data.profile.map(p => ({ ...p, distance_m: p.distance_m + offset }));
+        // Skip first point of subsequent segments (duplicate)
+        if (i > 0) segment.shift();
+        allData.push(...segment);
+      }
+    } catch (e) { /* skip failed segment */ }
+  }
+  if (allData.length > 0) {
+    state.routeProfileData = allData;
+    showElevationPanel(allData);
+  }
+}
+
+function handleGPXImport(event) {
+  const file = event.target.files[0];
+  if (file) importGPX(file);
+  event.target.value = ''; // reset for re-import
 }
 
 function difficultyBadge(sac) {
