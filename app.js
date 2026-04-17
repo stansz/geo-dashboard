@@ -792,10 +792,15 @@ function switchTab(tab) {
 
   const container = document.getElementById('sidebar-content');
 
+  // Remove category filter if switching away from custom
+  const catFilter = document.getElementById('category-filter');
+  if (catFilter && tab !== 'custom') catFilter.remove();
+
   if (tab === 'places') {
     // Keep current results or show empty
     if (state.results.length === 0) showEmpty('Search for places, trails, or transit');
   } else if (tab === 'custom') {
+    showCategoryFilter();
     loadCustomPlaces();
   } else if (tab === 'near') {
     loadNearby();
@@ -806,16 +811,59 @@ function switchTab(tab) {
   }
 }
 
-async function loadCustomPlaces() {
+function showCategoryFilter() {
+  const existing = document.getElementById('category-filter');
+  if (existing) return;
+  const categories = [
+    { cat: 'all', icon: '📋', label: 'All' },
+    { cat: 'mall', icon: '🛍️', label: 'Malls' },
+    { cat: 'airport', icon: '✈️', label: 'Airports' },
+    { cat: 'ferry_terminal', icon: '⛴️', label: 'Ferries' },
+    { cat: 'university', icon: '🎓', label: 'Universities' },
+    { cat: 'ski_resort', icon: '⛷️', label: 'Ski' },
+    { cat: 'hospital', icon: '🏥', label: 'Hospitals' },
+    { cat: 'restaurant', icon: '🍜', label: 'Food' },
+    { cat: 'cafe', icon: '☕', label: 'Cafés' },
+  ];
+  const container = document.getElementById('sidebar-content');
+  const filter = document.createElement('div');
+  filter.id = 'category-filter';
+  filter.className = 'category-filter';
+  filter.innerHTML = categories.map(c =>
+    `<button class="cat-btn${c.cat === 'all' ? ' active' : ''}" data-cat="${c.cat}" onclick="filterCustomPlaces('${c.cat}')">
+      <span>${c.icon}</span> <span class="cat-label">${c.label}</span>
+    </button>`
+  ).join('');
+  container.parentNode.insertBefore(filter, container);
+}
+
+function filterCustomPlaces(category) {
+  document.querySelectorAll('.cat-btn').forEach(b => b.classList.toggle('active', b.dataset.cat === category));
+  loadCustomPlaces(category);
+}
+
+async function loadCustomPlaces(category) {
   showLoading();
   try {
-    const data = await apiGet('/api/places/custom');
+    const params = {};
+    if (category && category !== 'all') params.subtype = category;
+    const data = await apiGet('/api/places/custom', Object.keys(params).length ? params : undefined);
     state.results = data;
     renderResults(data, 'places');
     placeMarkers(data);
   } catch (e) {
     showError('Failed: ' + e.message);
   }
+}
+
+function updateCategoryCount(data) {
+  const counter = {};
+  data.forEach(p => { const c = p.subtype || 'other'; counter[c] = (counter[c] || 0) + 1; });
+  document.querySelectorAll('.cat-btn').forEach(btn => {
+    const cat = btn.dataset.cat;
+    const count = cat === 'all' ? data.length : (counter[cat] || 0);
+    btn.querySelector('.cat-count').textContent = count;
+  });
 }
 
 async function loadNearby() {

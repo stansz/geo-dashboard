@@ -662,3 +662,35 @@ body {
 .history-query { flex: 1; }
 .history-time { color: var(--text-dim); font-size: 11px; }
 .history-clear { justify-content: center; color: var(--red); }
+
+/* ---------------------------------------------------------------------------
+   Category Filter
+   --------------------------------------------------------------------------- */
+.category-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg2);
+}
+.cat-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--card);
+  color: var(--text-dim);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.cat-btn:hover { border-color: var(--primary); }
+.cat-btn.active {
+  background: var(--accent);
+  border-color: var(--primary);
+  color: var(--primary);
+}
+.cat-count { font-size: 10px; opacity: 0.6; }
