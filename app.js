@@ -3,7 +3,7 @@
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
-const API = window.GEO_API_URL || (window.location.hostname === 'localhost' ? 'http://localhost:8090' : '');
+const API = 'https://maps.ogsapps.cc';
 const DEFAULT_CENTER = [49.19, -122.85]; // Surrey-ish
 const DEFAULT_ZOOM = 12;
 
@@ -23,7 +23,16 @@ const state = {
   transitVisible: false,
   customMarkers: [],
   transitMarkers: [],
+  busStopMarkers: [],
+  currentTileLayer: 'Voyager',
+  elevationMode: false,
+  elevationPoints: [],
+  elevationLine: null,
+  profileChart: null,
+  selectedMarker: null,
 };
+
+let tileLayers = {};
 
 // ---------------------------------------------------------------------------
 // Init
@@ -31,8 +40,31 @@ const state = {
 document.addEventListener('DOMContentLoaded', () => {
   initMap();
   initUI();
+  handleUrlParams();
   tryGeolocation();
 });
+
+function handleUrlParams() {
+  const params = new URLSearchParams(window.location.search);
+  const layer = params.get('layer');
+  const tab = params.get('tab');
+  if (layer === 'custom') toggleCustomPlaces();
+  if (layer === 'transit') toggleTransit();
+  if (layer === 'elevation') toggleElevationMode();
+  if (tab === 'trails') switchTab('trails');
+  if (tab === 'custom') switchTab('custom');
+
+  // Force Voyager tile layer after a short delay
+  setTimeout(() => {
+    if (state.currentTileLayer !== 'Voyager') {
+      tileLayers[state.currentTileLayer]?.remove();
+      tileLayers['Voyager']?.addTo(state.map);
+      state.currentTileLayer = 'Voyager';
+      document.querySelectorAll('#tile-switcher button').forEach(b => b.classList.remove('active'));
+      document.querySelector('#tile-switcher button[data-tile="Voyager"]')?.classList.add('active');
+    }
+  }, 200);
+}
 
 function initMap() {
   state.map = L.map('map', {
@@ -41,22 +73,37 @@ function initMap() {
     zoomControl: false,
   });
 
-  L.control.zoom({ position: 'bottomleft' }).addTo(state.map);
+  tileLayers = {
+    'Voyager': L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+      maxZoom: 19, attribution: '&copy; CartoDB',
+    }),
+    'Topo': L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
+      maxZoom: 17, attribution: '&copy; OpenTopoMap',
+    }),
+    'Satellite': L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+      maxZoom: 18, attribution: '&copy; Esri',
+    }),
+  };
 
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19,
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-  }).addTo(state.map);
+  tileLayers['Voyager'].addTo(state.map);
+  state.currentTileLayer = 'Voyager';
+
+  L.control.zoom({ position: 'bottomleft' }).addTo(state.map);
 
   // Click on map to add custom place
   state.map.on('click', (e) => {
-    if (state.activeTab === 'custom') {
+    if (state.elevationMode) {
+      handleElevationClick(e.latlng);
+    } else if (state.activeTab === 'custom') {
       showAddPlaceModal(e.latlng.lat, e.latlng.lng);
     }
   });
 
   // Update status bar on move
   state.map.on('moveend', updateStatusBar);
+
+  // Ensure map tiles load after container settles
+  setTimeout(() => state.map.invalidateSize(), 100);
 }
 
 function initUI() {
@@ -74,6 +121,9 @@ function initUI() {
   // GPS button
   document.getElementById('btn-gps').addEventListener('click', tryGeolocation);
 
+  // Clear button
+  document.getElementById('btn-clear').addEventListener('click', clearSearch);
+
   // Floating GPS share button
   document.getElementById('gps-share-btn').addEventListener('click', () => {
     tryGeolocation();
@@ -84,12 +134,53 @@ function initUI() {
   document.getElementById('btn-sidebar').addEventListener('click', () => {
     state.sidebarOpen = !state.sidebarOpen;
     document.querySelector('.sidebar').classList.toggle('collapsed', !state.sidebarOpen);
-    state.map.invalidateSize();
+    // Wait for CSS transition before resizing map
+    setTimeout(() => state.map.invalidateSize(), 250);
   });
 
   // Layer toggles
   document.getElementById('layer-custom').addEventListener('click', toggleCustomPlaces);
   document.getElementById('layer-transit').addEventListener('click', toggleTransit);
+
+  // Tile layer switcher
+  document.querySelectorAll('#tile-switcher button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const name = btn.dataset.tile;
+      if (name === state.currentTileLayer) return;
+      tileLayers[state.currentTileLayer].remove();
+      tileLayers[name].addTo(state.map);
+      state.currentTileLayer = name;
+      document.querySelectorAll('#tile-switcher button').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+    });
+  });
+
+  // Elevation mode toggle
+  document.getElementById('layer-elevation').addEventListener('click', toggleElevationMode);
+
+  // Radius slider
+  const slider = document.getElementById('radius-slider');
+  const sliderVal = document.getElementById('radius-value');
+  slider.addEventListener('input', () => {
+    sliderVal.textContent = slider.value + ' km';
+  });
+
+  // Search this area button
+  const searchAreaBtn = document.getElementById('search-area-btn');
+  searchAreaBtn.addEventListener('click', searchCurrentArea);
+
+  // Show/hide search area button on map move
+  state.map.on('moveend', () => {
+    updateStatusBar();
+    const center = state.map.getCenter();
+    const hasResults = state.results.length > 0;
+    const moved = state.lat && (
+      Math.abs(center.lat - state.lat) > 0.005 ||
+      Math.abs(center.lng - state.lon) > 0.005
+    );
+    searchAreaBtn.style.display = hasResults || moved ? 'block' : 'none';
+    loadBusStopsInView();
+  });
 
   // Keyboard shortcut: Escape closes sidebar
   document.addEventListener('keydown', (e) => {
@@ -202,10 +293,15 @@ function parseSearchQuery(input) {
   return result;
 }
 
+function getRadius() {
+  const slider = document.getElementById('radius-slider');
+  return parseInt(slider.value) * 1000; // km to meters
+}
+
 async function searchPlaces(q) {
   showLoading();
   try {
-    let lat = state.lat, lon = state.lon, radius = 5000;
+    let lat = state.lat, lon = state.lon, radius = getRadius();
 
     // Geocode location if specified
     if (q.location) {
@@ -213,7 +309,7 @@ async function searchPlaces(q) {
       if (geo.length > 0) {
         lat = geo[0].lat;
         lon = geo[0].lon;
-        radius = 5000;
+        radius = getRadius();
         state.map.setView([lat, lon], 13);
       }
     }
@@ -226,6 +322,7 @@ async function searchPlaces(q) {
 
     const data = await apiGet('/api/places/search', params);
     state.results = data;
+    document.getElementById('search-area-btn').style.display = 'block';
     renderResults(data, 'places');
     placeMarkers(data);
   } catch (e) {
@@ -245,7 +342,7 @@ async function searchTrails(q) {
     } else if (state.lat) {
       // Near me
       const data = await apiGet('/api/trails/near', {
-        lat: state.lat, lon: state.lon, radius: 20000, limit: 20,
+        lat: state.lat, lon: state.lon, radius: getRadius(), limit: 20,
       });
       state.results = data;
       renderResults(data, 'trails');
@@ -281,6 +378,33 @@ async function searchTransit(q) {
   } catch (e) {
     showError('Transit search failed: ' + e.message);
   }
+}
+
+async function searchCurrentArea() {
+  const center = state.map.getCenter();
+  state.lat = center.lat;
+  state.lon = center.lng;
+  const input = document.getElementById('search-input').value.trim();
+  if (input) {
+    handleSearch();
+  } else {
+    // Default to nearby places search
+    loadNearby();
+  }
+  document.getElementById('search-area-btn').style.display = 'none';
+}
+
+function clearSearch() {
+  document.getElementById('search-input').value = '';
+  document.getElementById('btn-clear').style.display = 'none';
+  state.results = [];
+  state.markers.forEach(m => state.map.removeLayer(m));
+  state.markers = [];
+  state.trailLayers.forEach(l => state.map.removeLayer(l));
+  state.trailLayers = [];
+  document.getElementById('results-list').innerHTML = '';
+  document.getElementById('search-area-btn').style.display = 'none';
+  state.map.setView(DEFAULT_CENTER, DEFAULT_ZOOM);
 }
 
 // ---------------------------------------------------------------------------
@@ -321,6 +445,7 @@ async function apiDelete(path) {
 // Render results
 // ---------------------------------------------------------------------------
 function renderResults(data, type) {
+  document.getElementById('btn-clear').style.display = 'block';
   const container = document.getElementById('sidebar-content');
   if (!data || data.length === 0) {
     showEmpty('No results found');
@@ -350,9 +475,29 @@ function renderResults(data, type) {
         state.map.setView([item.lat, item.lon], 16);
         // Open popup
         state.markers[idx]?.openPopup();
+        // Show star indicator for this result
+        selectResult(item);
       }
     });
   });
+}
+
+function selectResult(item) {
+  // Remove previous selected marker
+  if (state.selectedMarker) {
+    state.map.removeLayer(state.selectedMarker);
+    state.selectedMarker = null;
+  }
+  // Add a star marker for this result (always visible)
+  const starIcon = L.divIcon({
+    className: '',
+    html: `<div style="font-size:28px;text-shadow:1px 1px 3px #000;color:#FFD700;">⭐</div>`,
+    iconSize: [32, 32],
+    iconAnchor: [16, 32],
+    popupAnchor: [0, -30],
+  });
+  const marker = L.marker([item.lat, item.lon], { icon: starIcon }).addTo(state.map);
+  state.selectedMarker = marker;
 }
 
 function renderPlaceCard(p, i) {
@@ -499,9 +644,10 @@ function placeTransitStationMarkers(data) {
 function makeIcon(emoji) {
   return L.divIcon({
     className: '',
-    html: `<div style="font-size:22px;text-shadow:1px 1px 2px #000;transform:translate(-50%,-50%)">${emoji}</div>`,
+    html: `<div style="font-size:22px;text-shadow:1px 1px 2px #000;transform:translate(-50%,-100%)">${emoji}</div>`,
     iconSize: [24, 24],
-    iconAnchor: [12, 12],
+    iconAnchor: [12, 22],
+    popupAnchor: [0, -20],
   });
 }
 
@@ -612,7 +758,7 @@ async function loadCustomPlaces() {
     const data = await apiGet('/api/places/custom');
     state.results = data;
     renderResults(data, 'places');
-    placeCustomMarkers(data);
+    placeMarkers(data);
   } catch (e) {
     showError('Failed: ' + e.message);
   }
@@ -626,7 +772,7 @@ async function loadNearby() {
   showLoading();
   try {
     const data = await apiGet('/api/places/near', {
-      lat: state.lat, lon: state.lon, radius: 2000, limit: 30,
+      lat: state.lat, lon: state.lon, radius: getRadius(), limit: 30,
     });
     state.results = data;
     renderResults(data, 'places');
@@ -679,6 +825,8 @@ async function toggleTransit() {
   } else {
     state.transitMarkers.forEach(m => state.map.removeLayer(m));
     state.transitMarkers = [];
+    state.busStopMarkers.forEach(m => state.map.removeLayer(m));
+    state.busStopMarkers = [];
   }
 }
 
@@ -693,6 +841,174 @@ function placeTransitLayer(data) {
       .bindPopup(makeTransitPopup(s));
     state.transitMarkers.push(marker);
   });
+}
+
+// ---------------------------------------------------------------------------
+// Bus stops (zoom-dependent overlay)
+// ---------------------------------------------------------------------------
+async function loadBusStopsInView() {
+  if (!state.transitVisible) return;
+  const zoom = state.map.getZoom();
+  if (zoom < 15) {
+    // Too zoomed out — clear bus stops
+    state.busStopMarkers.forEach(m => state.map.removeLayer(m));
+    state.busStopMarkers = [];
+    return;
+  }
+
+  const bounds = state.map.getBounds();
+  try {
+    const data = await apiGet('/api/transit/bus-stops', {
+      south: bounds.getSouth().toFixed(5),
+      north: bounds.getNorth().toFixed(5),
+      west: bounds.getWest().toFixed(5),
+      east: bounds.getEast().toFixed(5),
+      limit: 150,
+    });
+    // Clear old markers
+    state.busStopMarkers.forEach(m => state.map.removeLayer(m));
+    state.busStopMarkers = [];
+
+    data.forEach(s => {
+      const routes = (s.routes || []).join(', ');
+      const icon = makeIcon('🚌');
+      const marker = L.marker([s.stop_lat, s.stop_lon], { icon })
+        .addTo(state.map)
+        .bindPopup(`<div class="popup-title">🚌 ${esc(s.stop_name)}</div>
+          <div class="popup-meta">Routes: ${esc(routes || 'N/A')}</div>`);
+      state.busStopMarkers.push(marker);
+    });
+  } catch (e) { /* silent */ }
+}
+
+// ---------------------------------------------------------------------------
+// Elevation query & profile
+// ---------------------------------------------------------------------------
+function toggleElevationMode() {
+  state.elevationMode = !state.elevationMode;
+  document.getElementById('layer-elevation').classList.toggle('active', state.elevationMode);
+  state.map.getContainer().style.cursor = state.elevationMode ? 'crosshair' : '';
+
+  if (!state.elevationMode) {
+    clearElevationState();
+  }
+}
+
+function clearElevationState() {
+  state.elevationPoints.forEach(m => state.map.removeLayer(m));
+  state.elevationPoints = [];
+  if (state.elevationLine) { state.map.removeLayer(state.elevationLine); state.elevationLine = null; }
+  const panel = document.getElementById('elevation-panel');
+  if (panel) panel.style.display = 'none';
+}
+
+async function handleElevationClick(latlng) {
+  if (!state.elevationMode) return;
+
+  // Add marker for this point
+  const icon = makeIcon('📍');
+  const marker = L.marker([latlng.lat, latlng.lng], { icon }).addTo(state.map);
+  state.elevationPoints.push(marker);
+
+  if (state.elevationPoints.length === 1) {
+    // First point — just show elevation
+    try {
+      const data = await apiGet('/api/elevation', { lat: latlng.lat.toFixed(6), lon: latlng.lng.toFixed(6) });
+      marker.bindPopup(`<div class="popup-title">📏 Elevation</div>
+        <div class="popup-meta">${data.elevation_m != null ? data.elevation_m + ' m' : 'No data'}</div>
+        <div class="popup-meta">${latlng.lat.toFixed(4)}, ${latlng.lng.toFixed(4)}</div>`).openPopup();
+    } catch (e) { /* silent */ }
+  }
+
+  if (state.elevationPoints.length === 2) {
+    // Two points — draw profile
+    const p1 = state.elevationPoints[0].getLatLng();
+    const p2 = state.elevationPoints[1].getLatLng();
+    state.elevationLine = L.polyline([p1, p2], { color: '#ff6b35', weight: 3, dashArray: '8 4' }).addTo(state.map);
+    await loadElevationProfile(p1, p2);
+    // Reset for next query after a delay
+    setTimeout(() => { clearElevationState(); }, 15000);
+  }
+
+  if (state.elevationPoints.length > 2) {
+    clearElevationState();
+  }
+}
+
+async function loadElevationProfile(p1, p2) {
+  const dist = p1.distanceTo(p2);
+  const numPoints = Math.min(Math.max(Math.round(dist / 50), 10), 100);
+  try {
+    const data = await apiGet('/api/elevation/profile', {
+      lat1: p1.lat.toFixed(6), lon1: p1.lng.toFixed(6),
+      lat2: p2.lat.toFixed(6), lon2: p2.lng.toFixed(6),
+      points: numPoints,
+    });
+    showElevationPanel(data);
+  } catch (e) { /* silent */ }
+}
+
+function showElevationProfile(data) {
+  const panel = document.getElementById('elevation-panel');
+  const canvas = document.getElementById('elevation-canvas');
+  if (!panel || !canvas) return;
+
+  panel.style.display = 'block';
+  const pts = data.points.filter(p => p.elevation_m != null);
+  if (pts.length < 2) { panel.style.display = 'none'; return; }
+
+  const minEl = Math.min(...pts.map(p => p.elevation_m));
+  const maxEl = Math.max(...pts.map(p => p.elevation_m));
+  const pad = Math.max((maxEl - minEl) * 0.1, 10);
+
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width = canvas.clientWidth * 2;
+  const H = canvas.height = canvas.clientHeight * 2;
+  ctx.clearRect(0, 0, W, H);
+
+  // Draw filled area
+  ctx.beginPath();
+  ctx.moveTo(0, H);
+  pts.forEach((p, i) => {
+    const x = (i / (pts.length - 1)) * W;
+    const y = H - ((p.elevation_m - minEl + pad) / (maxEl - minEl + pad * 2)) * H;
+    ctx.lineTo(x, y);
+  });
+  ctx.lineTo(W, H);
+  ctx.closePath();
+  const grad = ctx.createLinearGradient(0, 0, 0, H);
+  grad.addColorStop(0, 'rgba(255,107,53,0.6)');
+  grad.addColorStop(1, 'rgba(255,107,53,0.05)');
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  // Draw line
+  ctx.beginPath();
+  pts.forEach((p, i) => {
+    const x = (i / (pts.length - 1)) * W;
+    const y = H - ((p.elevation_m - minEl + pad) / (maxEl - minEl + pad * 2)) * H;
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  });
+  ctx.strokeStyle = '#ff6b35';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+
+  // Labels
+  document.getElementById('el-gain').textContent = `↑${data.elevation_gain_m}m`;
+  document.getElementById('el-loss').textContent = `↓${data.elevation_loss_m}m`;
+  document.getElementById('el-min').textContent = `Min: ${data.elevation_min_m}m`;
+  document.getElementById('el-max').textContent = `Max: ${data.elevation_max_m}m`;
+}
+
+function showElevationPanel(data) {
+  const panel = document.getElementById('elevation-panel');
+  if (!panel) return;
+  panel.style.display = 'block';
+
+  const closeBtn = document.getElementById('elevation-close');
+  if (closeBtn) closeBtn.onclick = () => { panel.style.display = 'none'; clearElevationState(); };
+
+  showElevationProfile(data);
 }
 
 // ---------------------------------------------------------------------------
